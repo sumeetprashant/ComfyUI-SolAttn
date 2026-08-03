@@ -177,6 +177,23 @@ recorded in [`NOTICE`](NOTICE).
 `optimized_attention_override` hook this integrates against, which is what makes
 a clean per-model attention patch possible at all.
 
+### Prior art and design lineage
+
+This repository contains no code from the projects below, but it would not look
+the way it does without them.
+
+- **[ComfyUI-RadialAttn](https://github.com/woct0rdho/ComfyUI-RadialAttn)**
+  ([@woct0rdho](https://github.com/woct0rdho)) — established the pattern this
+  follows: expose sparse attention as an opt-in `MODEL → MODEL` patch node that
+  writes into `model_options["transformer_options"]`, rather than flipping a
+  global backend for every model in the graph. That design decision is theirs;
+  this repo just applies it to a different kernel.
+- **[RadialAttention](https://github.com/mit-han-lab/radial-attention)**
+  (MIT Han Lab) — the sparse attention method that port wraps.
+- **[ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper)**
+  ([@kijai](https://github.com/kijai)) — `WanVideoSetRadialAttention` is
+  parallel prior art for the same idea inside the wrapper workflow.
+
 **Triton** (OpenAI and contributors) — compiles the kernel.
 
 **SageAttention** (thu-ml) and **woct0rdho**'s Windows builds — the backend this
