@@ -4,10 +4,32 @@ Run NVIDIA's **Sol-Attn** sparse attention inside ComfyUI, as an opt-in
 per-model patch — including on **consumer Blackwell (SM120 / RTX 50-series)**,
 which upstream does not support.
 
-> **This repository removes a GPU architecture check that NVIDIA put in their
-> code.** That is not a bug fix and it is not sanctioned by NVIDIA. Read
-> [Scope and caveats](#scope-and-caveats) before you use it. The full diff and
-> its rationale are documented in [`NOTICE`](NOTICE).
+> To do that it lifts an architecture guard in NVIDIA's dispatcher — a check
+> that picks between their SM90/SM100 kernels, not a hardware-safety check. See
+> [FAQ](#faq) for what that does and doesn't mean; the exact diff is in
+> [`NOTICE`](NOTICE).
+
+---
+
+## FAQ
+
+**Is that architecture check a safety thing — will this overheat my GPU?**
+No. It's a *dispatch guard*. It selects between NVIDIA's hand-written CuTe
+kernels, which only exist for SM90 and SM100 — so on any other card it means
+"no kernel compiled for you," not "unsafe." Thermal and power limits live in
+firmware and the driver; no userspace CUDA library can affect them.
+
+**Then why did it block the Triton kernel too?**
+Because `_validate()` is shared between both code paths. The Triton kernel has
+no architecture dependency — Triton compiles it for whatever card you have — it
+just inherited a guard written for the CuTe path.
+
+**So what's the actual risk?**
+Wrong output, not damaged hardware. If a kernel assumed something
+architecture-specific that doesn't hold, you'd see it in the picture. Every
+other check is kept verbatim (head_dim 128, bf16, contiguity, device, shape),
+and any shape it can't handle falls back to your normal attention backend
+instead of erroring.
 
 ---
 
