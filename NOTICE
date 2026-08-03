@@ -1,0 +1,79 @@
+ComfyUI-SolAttn
+Copyright 2026 Sumeet Prashant
+
+This product includes software developed by NVIDIA Corporation as part of the
+Sana / Sol-Engine project (https://github.com/NVlabs/Sana), licensed under the
+Apache License, Version 2.0.
+
+================================================================================
+REDISTRIBUTED FILES
+================================================================================
+
+The following files are redistributed from NVlabs/Sana, branch `sol-engine`,
+path `techniques/sparse_backends/sol_attn/`:
+
+  solref/preprocess.py
+      Source: sol_attn/preprocess.py
+      Status: UNMODIFIED (verbatim copy)
+
+  solref/fwd.py
+      Source: sol_attn/triton_ref/fwd.py
+      Status: MODIFIED -- see "CHANGES" below
+
+================================================================================
+CHANGES MADE TO NVIDIA SOURCE (Apache-2.0 section 4b)
+================================================================================
+
+solref/fwd.py:
+
+  1. Replaced the two upstream imports
+
+         from sol_attn.interface import _validate
+         from sol_attn.preprocess  import prepare
+
+     with a local relative import of `prepare`, plus a local copy of
+     `_validate`. Upstream `sol_attn/interface.py` imports `cuda.bindings.driver`
+     and `cutlass.cute` at module scope; those are CUTLASS-DSL dependencies
+     required only by the hand-written SM90/SM100 CuTe kernels, not by the
+     Triton reference kernel. Importing it would fail on installs that do not
+     carry the CUTLASS DSL.
+
+  2. REMOVED THE GPU ARCHITECTURE GATE from the local copy of `_validate`:
+
+         arch = torch.cuda.get_device_capability(q.device)
+         if arch not in ((9, 0), (10, 0)):
+             raise RuntimeError("Sol-Attn supports H100 (SM90) and B200 (SM100)")
+
+     Rationale: that check guards `interface.py`'s dispatcher, which selects
+     between hand-written CuTe kernels that exist only for SM90 and SM100. The
+     Triton kernel in this file is JIT-compiled by Triton for whatever
+     architecture it is given and has no such dependency. Every other upstream
+     validation (rank, shape, head_dim == 128, bfloat16, device, contiguity,
+     kv_splits, thresh_type, route-group count) is retained verbatim.
+
+     THIS IS AN UNSANCTIONED CHANGE. NVIDIA does not claim support for, and has
+     not validated, Sol-Attn on architectures outside SM90/SM100. Numerical
+     behaviour and performance on other architectures are the responsibility of
+     this repository, not NVIDIA's. See README "Scope and caveats".
+
+  No other lines of upstream source were altered. The Triton kernel `_forward`,
+  its autotune configuration, and the `sol_attn()` launch path are untouched.
+
+================================================================================
+UPSTREAM THIRD-PARTY NOTICES (carried forward for accuracy)
+================================================================================
+
+NVIDIA's own THIRD_PARTY_NOTICES.md for sol_attn records that files under
+`sol_attn/_vendor/flash_attn/cute/` and portions of the SM90/SM100 design
+scaffold derive from the FlashAttention project (BSD-3-Clause).
+
+Those files are NOT redistributed here -- this repository vendors only the
+Triton reference path and its preprocessing. The notice is reproduced so the
+lineage of the upstream project is not lost.
+
+================================================================================
+DEPENDENCIES (not redistributed)
+================================================================================
+
+PyTorch, Triton, and ComfyUI are required at runtime and remain subject to
+their own licenses. None of their source is included here.
