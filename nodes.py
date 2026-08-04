@@ -37,6 +37,7 @@ class _Stats:
         self.fallbacks = 0
         self.reason = None
         self.logged = False
+        self.sched_logged = False
 
     def hit(self):
         self.hits += 1
@@ -51,17 +52,35 @@ class _Stats:
             self.reason = reason
             logging.info("[Sol-Attn] falling back to default backend: %s", reason)
 
+    def scheduled_off(self):
+        # Not a fallback -- the user asked for dense attention on these steps.
+        if not self.sched_logged:
+            logging.info("[Sol-Attn] outside start/end window - dense attention")
+            self.sched_logged = True
+
 
 STATS = _Stats()
 
 
-def _make_override(tau: float, backend: str = "triton"):
+def _make_override(tau: float, backend: str = "triton",
+                   sigma_start: float = None, sigma_end: float = None):
     kernel = sol_attn_flex if backend == "flex" else sol_attn
+    scheduled = sigma_start is not None and sigma_end is not None
 
     def override(func, q, k, v, heads, *args, **kwargs):
         mask = kwargs.get("mask", None)
         skip_reshape = kwargs.get("skip_reshape", False)
         skip_output_reshape = kwargs.get("skip_output_reshape", False)
+
+        # Sigmas fall as sampling proceeds, so the active window is
+        # sigma_end < sigma <= sigma_start. Same convention as core EasyCache.
+        if scheduled:
+            sigmas = (kwargs.get("transformer_options") or {}).get("sigmas", None)
+            if sigmas is not None:
+                s = float(sigmas[0])
+                if s > sigma_start or s <= sigma_end:
+                    STATS.scheduled_off()
+                    return func(q, k, v, heads, *args, **kwargs)
 
         try:
             if mask is not None:
@@ -129,6 +148,30 @@ class SolAttentionPatch:
                         "128 tokens, correction term kept.",
                     },
                 ),
+                "start_percent": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Fraction of sampling before Sol-Attn engages. "
+                        "Raise it to leave the early steps (composition, camera) "
+                        "on dense attention.",
+                    },
+                ),
+                "end_percent": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Fraction of sampling after which Sol-Attn "
+                        "stops. Lower it to leave the final detail-resolving "
+                        "steps on dense attention.",
+                    },
+                ),
             }
         }
 
@@ -148,17 +191,33 @@ class SolAttentionPatch:
         "your normal backend for any shape it can't handle."
     )
 
-    def patch(self, model, enabled, tau, backend="triton"):
+    def patch(self, model, enabled, tau, backend="triton",
+              start_percent=0.0, end_percent=1.0):
         if not enabled:
             return (model,)
         m = model.clone()
+
+        # percent -> sigma, the same way core's EasyCache does it. If the model
+        # can't report its sampling schedule, run unscheduled rather than fail.
+        sigma_start = sigma_end = None
+        if float(start_percent) > 0.0 or float(end_percent) < 1.0:
+            try:
+                ms = m.get_model_object("model_sampling")
+                sigma_start = float(ms.percent_to_sigma(float(start_percent)))
+                sigma_end = float(ms.percent_to_sigma(float(end_percent)))
+            except Exception as e:  # noqa: BLE001
+                logging.info("[Sol-Attn] schedule disabled (%s); running full range", e)
+                sigma_start = sigma_end = None
+
         opts = dict(m.model_options.get("transformer_options", {}))
-        opts["optimized_attention_override"] = _make_override(float(tau), backend)
+        opts["optimized_attention_override"] = _make_override(
+            float(tau), backend, sigma_start, sigma_end
+        )
         m.model_options["transformer_options"] = opts
         STATS.__init__()  # reset per-patch so the log reflects this run
         logging.info(
-            "[Sol-Attn] patch applied to model (tau=%.2f, backend=%s)",
-            float(tau), backend,
+            "[Sol-Attn] patch applied to model (tau=%.2f, backend=%s, %.2f-%.2f)",
+            float(tau), backend, float(start_percent), float(end_percent),
         )
         return (m,)
 
