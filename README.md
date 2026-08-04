@@ -97,12 +97,21 @@ your graph is untouched.
 | `enabled` | `true` | flip to `false` to A/B without rewiring |
 | `tau` | `1.0` | routing threshold. Higher = more blocks take the approximate path = faster, lower fidelity |
 | `backend` | `triton` | which kernel runs the routing — see [Backends](#backends) |
+| `start_percent` | `0.0` | sampling fraction before Sol engages — raise to keep early steps dense |
+| `end_percent` | `1.0` | sampling fraction after which Sol stops — lower to keep final steps dense |
+
+`start_percent` / `end_percent` restrict Sol to part of the sampling run: dense
+attention early (composition, camera) and late (fine detail), sparse in the
+middle where most of the time goes. Defaults `0.0 / 1.0` = always on. Idea taken
+from [kijai's ComfyUI-SolAttn_triton](https://github.com/kijai/ComfyUI-SolAttn_triton);
+percent→sigma conversion follows ComfyUI core's own EasyCache.
 
 The console tells you exactly what happened, every run:
 
 ```
-[Sol-Attn] patch applied to model (tau=1.00, backend=flex)
+[Sol-Attn] patch applied to model (tau=1.00, backend=flex, 0.00-1.00)
 [Sol-Attn] ACTIVE - attention is running on Sol-Attn
+[Sol-Attn] outside start/end window - dense attention
 [Sol-Attn] falling back to default backend: <reason>
 ```
 
@@ -230,6 +239,9 @@ the way it does without them.
 - **[ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper)**
   ([@kijai](https://github.com/kijai)) — `WanVideoSetRadialAttention` is
   parallel prior art for the same idea inside the wrapper workflow.
+- **[ComfyUI-SolAttn_triton](https://github.com/kijai/ComfyUI-SolAttn_triton)**
+  ([@kijai](https://github.com/kijai)) — a parallel Sol-Attn port, and the source
+  of the `start_percent` / `end_percent` idea implemented here.
 - **[ComfyUI_sol-attn_Blackwell](https://github.com/KingGore/ComfyUI_sol-attn_Blackwell)**
   ([@KingGore](https://github.com/KingGore)) — independently brought Sol-Attn to
   Blackwell via `flex_attention`, and got right the non-obvious
