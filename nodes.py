@@ -17,7 +17,7 @@ MiniMax H3 satisfies all four (56 heads x 128, bf16, mask=None).
 import logging
 import torch
 
-from .solref import sol_attn
+from .solref import sol_attn, sol_attn_flex
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +55,9 @@ class _Stats:
 STATS = _Stats()
 
 
-def _make_override(tau: float):
+def _make_override(tau: float, backend: str = "triton"):
+    kernel = sol_attn_flex if backend == "flex" else sol_attn
+
     def override(func, q, k, v, heads, *args, **kwargs):
         mask = kwargs.get("mask", None)
         skip_reshape = kwargs.get("skip_reshape", False)
@@ -82,7 +84,7 @@ def _make_override(tau: float):
             kt = k.transpose(1, 2).contiguous()
             vt = v.transpose(1, 2).contiguous()
 
-            out = sol_attn(qt, kt, vt, tau=tau)  # (B, T, H, D)
+            out = kernel(qt, kt, vt, tau=tau)  # (B, T, H, D)
 
             STATS.hit()
             if skip_output_reshape:
@@ -118,6 +120,15 @@ class SolAttentionPatch:
                         "1.0 is upstream default.",
                     },
                 ),
+                "backend": (
+                    ["triton", "flex"],
+                    {
+                        "default": "triton",
+                        "tooltip": "triton = NVIDIA's reference kernel, routing "
+                        "at 64 tokens. flex = torch flex_attention, routing at "
+                        "128 tokens, correction term kept.",
+                    },
+                ),
             }
         }
 
@@ -137,15 +148,18 @@ class SolAttentionPatch:
         "your normal backend for any shape it can't handle."
     )
 
-    def patch(self, model, enabled, tau):
+    def patch(self, model, enabled, tau, backend="triton"):
         if not enabled:
             return (model,)
         m = model.clone()
         opts = dict(m.model_options.get("transformer_options", {}))
-        opts["optimized_attention_override"] = _make_override(float(tau))
+        opts["optimized_attention_override"] = _make_override(float(tau), backend)
         m.model_options["transformer_options"] = opts
         STATS.__init__()  # reset per-patch so the log reflects this run
-        logging.info("[Sol-Attn] patch applied to model (tau=%.2f)", float(tau))
+        logging.info(
+            "[Sol-Attn] patch applied to model (tau=%.2f, backend=%s)",
+            float(tau), backend,
+        )
         return (m,)
 
 

@@ -96,64 +96,79 @@ your graph is untouched.
 |---|---|---|
 | `enabled` | `true` | flip to `false` to A/B without rewiring |
 | `tau` | `1.0` | routing threshold. Higher = more blocks take the approximate path = faster, lower fidelity |
+| `backend` | `triton` | which kernel runs the routing — see [Backends](#backends) |
 
 The console tells you exactly what happened, every run:
 
 ```
-[Sol-Attn] patch applied to model (tau=1.00)
+[Sol-Attn] patch applied to model (tau=1.00, backend=flex)
 [Sol-Attn] ACTIVE - attention is running on Sol-Attn
 [Sol-Attn] falling back to default backend: <reason>
 ```
 
+## Backends
+
+Two implementations of the same method. Both keep Sol-Attn's approximate
+correction — skipped blocks still contribute through their block summaries.
+
+| | `triton` | `flex` |
+|---|---|---|
+| kernel | NVIDIA's Triton reference | `torch.nn.attention.flex_attention` |
+| routing granularity | 64 tokens | 128 tokens |
+| cos vs dense SDPA | 0.999993 | 0.9993 |
+| first run cost | Triton autotune sweep | one `torch.compile` |
+
+`flex` builds its mask with `BlockMask.from_kv_blocks` — **not**
+`create_block_mask`, which vmaps over the whole `[B,H,T,T]` index space and OOMs
+(64 GiB at 32k tokens). Credit to
+[KingGore](https://github.com/KingGore/ComfyUI_sol-attn_Blackwell) for the
+flex_attention approach and that detail.
+
 A demo workflow is in [`workflows/`](workflows/).
 
-## Measured results — read the caveats
+## Measured
 
-Everything below is from one machine, one model. **Do not treat it as a
-benchmark.**
+> **Still testing.** These are early numbers from one rig, one model. More runs
+> and more models to come — treat this as work in progress, not a benchmark.
 
-**MiniMax H3, 15s, 480×864, 20 steps, `res_multistep`, fixed seed, same input
-image, SageAttention as the baseline:**
+MiniMax H3, 15s, 480×864, 20 steps, `res_multistep`, fixed seed, same input
+image. One session, back-to-back:
 
-| | s/it | |
+| | s/it | vs Sage |
 |---|---|---|
-| SageAttention 2.2.0 | 9.91 | baseline |
-| Sol-Attn, `tau=1.0` | **8.92** | **−10.0%** |
+| SageAttention 2.2.0 (Sol bypassed) | 9.37 | baseline |
+| Sol-Attn `triton`, `tau=1.0` | 9.70 | +3.5% ⚠️ |
+| Sol-Attn `flex`, `tau=1.0` | **8.67** | **−7.5%** |
+| Sol-Attn `flex`, `tau=1.12` | **7.93** | **−15.4%** |
 
-That is **one** controlled pair. Two further Sol runs on *different* input
-images measured 9.66 and 9.87 s/it, but no matched baseline was captured for
-those, so they prove nothing on their own.
+⚠️ That `triton` run had ~8.4 GB VRAM free vs ~25 GB for the others — not a
+matched comparison, re-run pending. An earlier session, different input image,
+measured `triton` `tau=1.0` at **8.92** vs Sage **9.91** (−10.0%).
 
-Sol-Attn's cost is **content-dependent** in a way dense attention is not — the
-fraction of blocks routed to the exact path depends on the actual attention
-distribution. Expect run-to-run variation with subject matter. Fix your seed and
-your input image before comparing anything.
+Fidelity — cosine vs dense SDPA, structured input, 8 heads × 128, bf16:
 
-Synthetic microbenchmark vs SageAttention, random tensors, 8 heads × 128:
+| `triton` | `flex` |
+|---|---|
+| **0.999993** | **0.9993** |
 
-| tokens | Sol (ms) | Sage (ms) | speedup |
-|---|---|---|---|
-| 2,048 | 0.12 | 0.20 | 1.67× |
-| 8,192 | 0.56 | 0.77 | 1.38× |
-| 16,384 | 1.76 | 2.38 | 1.35× |
-| 32,768 | 10.51 | 12.47 | 1.19× |
+Numerical only; a perceptual video A/B is not published yet. On *random Gaussian*
+input this reads ≈ 0.67 — an artifact of feeding noise to a structure-exploiting
+method, not a fidelity result. Benchmark on structured input.
 
-Random Gaussian q/k produce a near-uniform attention distribution, which is the
-worst possible input for a method that exploits structure. Treat these as a
-smoke test that the kernel runs and is not catastrophically slow — not as a
-performance claim, and not as a fidelity measurement.
-
-Also note the compile tax: Triton autotunes with `key=["T"]`, so the **first run
-at any new token count pays a JIT sweep inside the sampling loop.** Change your
-resolution or duration and you pay it again. Benchmark the second run.
+Two things that will skew your own numbers: Sol's cost is **content-dependent**,
+so fix seed *and* input image; and Triton autotunes on `key=["T"]`, so the first
+run at any new resolution pays a JIT sweep inside the sampling loop — measure the
+second run.
 
 ## Scope and caveats
 
 - **Sol-Attn is approximate.** Output will not be bit-identical to dense
   attention. Whether that is visible in your content is your call — A/B it.
-- **No fidelity A/B is published here yet.** The timing above is solid; a
-  matched quality comparison has not been completed. If you run one, please open
-  an issue with the pair.
+- **Fidelity is numerical, not perceptual.** A side-by-side video A/B is still
+  outstanding. If you run one, please open an issue with the pair.
+- **`triton` timing is unresolved** — two sessions disagree (−10.0% vs +3.5%
+  against Sage), the second under VRAM pressure. `flex` has the clean
+  matched-conditions measurement.
 - **The architecture gate was removed by this repository, not by NVIDIA.**
   NVIDIA has not validated Sol-Attn outside SM90/SM100. If you get bad numerics
   on some other architecture, that is this repo's problem to report — do not
@@ -215,6 +230,11 @@ the way it does without them.
 - **[ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper)**
   ([@kijai](https://github.com/kijai)) — `WanVideoSetRadialAttention` is
   parallel prior art for the same idea inside the wrapper workflow.
+- **[ComfyUI_sol-attn_Blackwell](https://github.com/KingGore/ComfyUI_sol-attn_Blackwell)**
+  ([@KingGore](https://github.com/KingGore)) — independently brought Sol-Attn to
+  Blackwell via `flex_attention`, and got right the non-obvious
+  `BlockMask.from_kv_blocks` detail. The `flex` backend here follows that
+  approach; it differs in keeping Sol-Attn's approximate correction term.
 
 **Triton** (OpenAI and contributors) — compiles the kernel.
 
