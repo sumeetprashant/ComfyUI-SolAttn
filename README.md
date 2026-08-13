@@ -27,6 +27,24 @@ UNETLoader → Sol-Attn → BasicGuider
 
 It only touches the model you wire it to.
 
+## Start from the workflow
+
+**[`workflows/minimax_h3_i2v_solattn_simple.json`](workflows/minimax_h3_i2v_solattn_simple.json)**
+— 17 nodes, image → video with audio on MiniMax H3. Everything in it is ComfyUI
+core except this node, so there's nothing else to install.
+
+```
+UNETLoader → Sol-Attn → MiniMaxH3SigmaShift → BasicGuider ┐
+LoadImage + CLIPLoader + VAELoader → MiniMaxH3ImageToVideo ┴→ SamplerCustomAdvanced → decode → SaveVideo
+```
+
+Repoint the two loaders and the input image at your own files — the names in
+there are from my machine. Then queue it and watch the console for the `ACTIVE`
+line below.
+
+To see what the node is worth, set `enabled` to `false` and run it again. That's
+the whole A/B.
+
 ---
 
 ## ⚠️ Two nodes will silently switch this off
