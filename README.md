@@ -27,23 +27,37 @@ UNETLoader → Sol-Attn → BasicGuider
 
 It only touches the model you wire it to.
 
-## Start from the workflow
+## How to use it — 5 steps
 
-**[`workflows/minimax_h3_i2v_solattn_simple.json`](workflows/minimax_h3_i2v_solattn_simple.json)**
-— 17 nodes, image → video with audio on MiniMax H3. Everything in it is ComfyUI
-core except this node, so there's nothing else to install.
+**1. Open the workflow.**
+[`workflows/minimax_h3_i2v_solattn_simple.json`](workflows/minimax_h3_i2v_solattn_simple.json)
+— 17 nodes, image → video with audio on MiniMax H3. All ComfyUI core except this
+node, so there's nothing else to install.
 
 ```
 UNETLoader → Sol-Attn → MiniMaxH3SigmaShift → BasicGuider ┐
-LoadImage + CLIPLoader + VAELoader → MiniMaxH3ImageToVideo ┴→ SamplerCustomAdvanced → decode → SaveVideo
+LoadImage + CLIPLoader + VAELoader → MiniMaxH3ImageToVideo ┴→ Sampler → decode → SaveVideo
 ```
 
-Repoint the two loaders and the input image at your own files — the names in
-there are from my machine. Then queue it and watch the console for the `ACTIVE`
-line below.
+**2. Repoint three nodes at your own files** — `UNETLoader`, `CLIPLoader`,
+`LoadImage`. The filenames in there are from my machine and mean nothing on
+yours.
 
-To see what the node is worth, set `enabled` to `false` and run it again. That's
-the whole A/B.
+**3. Queue it. Watch the console for this line:**
+
+```
+[Sol-Attn] ACTIVE - attention is running on Sol-Attn
+```
+
+That line is the whole point. No `ACTIVE` and no `falling back` means it isn't
+running — jump to [the two nodes that switch it off](#-two-nodes-will-silently-switch-this-off).
+
+**4. Run it a second time.** The first run at any new resolution pays a
+one-time Triton compile *inside* the sampling loop. Judging the node on run one
+is like timing a car during the handbrake turn out of the driveway.
+
+**5. Set `enabled` to `false` and run again.** Two numbers, same seed. That's
+the entire A/B — no rewiring.
 
 ---
 
@@ -75,26 +89,41 @@ attention path. That's the bug above.
 Only two matter to start with: **`tau`** and **`backend`**. Leave the rest alone
 until you have a reason.
 
-| knob | plain English | when to touch it |
+| knob | what it actually does | when to touch it |
 |---|---|---|
-| `tau` | How much work to skip. Higher = faster and rougher. | **The main dial.** Start 1.4. See the table below for where it breaks. |
-| `backend` | `triton` or `flex`. | Leave on `triton`. `flex` pays ~80 s of compile per resolution — only worth it at 30+ steps. |
-| `enabled` | Off switch. | A/B without unplugging cables. |
-| `start_percent` / `end_percent` | Which slice of the render uses sparse attention. `0.0–1.0` = all of it. | Only if you see a specific artifact. Narrowing this costs speed — see below. |
-| `tau_end` | Ramps `tau` across the render: careful early, fast late. `0` = off. | When one fixed `tau` is either too slow or too rough. |
-| `dense_blocks` | Keeps the first and last N transformer blocks exact. | Cheap insurance if a high `tau` is misbehaving. |
-| `dense_block_ranges` | Same, but you name the blocks: `39-42`. | When the blocks worth protecting aren't the first/last ones. |
-| `sink_conditioning` | **MiniMax H3 only.** H3 packs the text prompt and audio at the front of the sequence. This keeps those rows exact so prompt adherence and lip-sync survive. | Leave `exact_kv` on H3. No effect on other models — it says so in the log. |
-| `min_tokens` | Don't bother below this sequence length. | Rarely. Short clips aren't worth the routing overhead. |
-| `thresh_type` | How the skip decision is estimated. `diag` is the default; `exact` is more precise and costs more. | Rarely. |
+| `tau` | How much work the model is allowed to skip. Low = careful. High = fast. Too high = two Brians. | **This is the dial.** Start at 1.4. |
+| `backend` | `triton` or `flex`. | Leave it on `triton`. `flex` spends ~80 s compiling per resolution and only earns that back over 30+ steps. |
+| `enabled` | The off switch. | Your A/B button. |
+| `start_percent` / `end_percent` | Which slice of the render gets sparse attention. `0.0–1.0` is all of it. | Only to chase a specific artifact. Narrowing it costs speed — that's the point of it. |
+| `tau_end` | Slides `tau` from careful at the start to fast at the end. `0` = off. | When one fixed `tau` is either too slow or too rough and you want both. |
+| `dense_blocks` | Keeps the first and last N transformer blocks doing full exact work. | Insurance. Measured no benefit here, so try `tau` first. |
+| `dense_block_ranges` | Same, but you pick the blocks by hand: `39-42`. | When the blocks worth protecting aren't at the ends. |
+| `sink_conditioning` | **MiniMax H3 only.** H3 stacks your prompt and the audio at the front of the sequence. This stops the sparse path from skimming them, so the model keeps listening to what you asked for. | Leave it on `exact_kv` for H3. On anything else it does nothing and says so in the log. |
+| `min_tokens` | Below this sequence length, don't bother — the bookkeeping costs more than the skipping saves. | Rarely. |
+| `thresh_type` | How it decides what to skip. `diag` is the default; `exact` thinks harder and charges for it. | Rarely. |
 
 ### Just tell me what to set
 
-- **Want it faster:** `tau 1.8`, everything else default. Measured 24% faster than
-  ComfyUI's own attention, picture held.
-- **Being careful:** `tau 1.4`. 14% faster, closest to baseline.
-- **Something looks wrong:** drop `tau` first. Don't reach for `dense_blocks` —
-  it cost 6% and fixed nothing measurable here.
+1. **Faster:** `tau 1.8`. Everything else default.
+2. **Careful:** `tau 1.4`. Closest to the baseline picture.
+3. **Something looks wrong:** turn `tau` down. Not `dense_blocks` — it cost 6%
+   here and fixed nothing measurable.
+
+### Will it actually help *you*?
+
+Longer clips win more. Attention is the part of the cost that grows fastest with
+clip length, and skipping attention is the only thing this node does — so the
+bigger the pile, the more there is to skip.
+
+Same workflow, same seed, 20 steps, only the clip length changed:
+
+| clip | off | on (`tau 1.8`) | gain |
+|---|---|---|---|
+| 73 frames (3 s) | 35.1 s | 32.1 s | **9%** |
+| 243 frames (10 s) | 166.8 s | 135.2 s | **19%** |
+
+If you make three-second clips, this node is not your bottleneck and you can
+stop reading. If you make long ones, keep going.
 
 ---
 
@@ -105,6 +134,11 @@ back-to-back, one session.
 
 Baseline is **ComfyUI's own `comfy kitchen attention`**, not Sage — kitchen is
 the faster and more honest thing to beat, because it's exact.
+
+This table is from a production graph (6 steps, turbo LoRA, chunked feed-forward).
+The plain demo workflow above, at 20 steps with no LoRA, measured **19%** at the
+same clip length. Same direction, different graph — which is why the exact
+percentage you get will be your own.
 
 | setting | time | vs baseline | texture metric | picture |
 |---|---|---|---|---|
