@@ -59,6 +59,8 @@ def _forward(
     o_desc,
     scale,
     T,
+    SINK_KV,
+    SINK_Q,
     H: tl.constexpr,
     D: tl.constexpr,
     NT: tl.constexpr,
@@ -97,9 +99,15 @@ def _forward(
             [batch, group_start, head, v_tile * BV]
         ).reshape([GROUP_SIZE, BV])
         scores = tl.dot(q, kc.T).to(tl.float32) * scale_log2
+        # SINK_KV: the leading KV blocks (H3 packs text/cond/ref/audio rows at
+        # the front) always take the exact path, never the block summary.
+        # SINK_Q: query rows in those same leading blocks run fully exact --
+        # for them every valid KV block is forced onto the exact path.
         exact = (
             (tl.sum(scores, axis=0) / q_len > route_threshold)
             | (tl.abs(q_block - block_indices) <= 1)
+            | (block_indices < SINK_KV)
+            | (q_block < SINK_Q)
         ) & valid
 
         approximate = valid & ~exact
@@ -166,15 +174,24 @@ def sol_attn(
     *,
     scale: float | None = None,
     tau: float = 1.0,
+    sink_kv_blocks: int = 0,
+    sink_q_blocks: int = 0,
+    thresh_type: str = "diag",
 ) -> torch.Tensor:
-    """Run the readable Triton reference on BTHD inputs."""
+    """Run the readable Triton reference on BTHD inputs.
 
-    _validate(q, k, v, 1, "diag")
+    `sink_kv_blocks` pins that many leading 64-token KV blocks to the exact
+    path for every query row; `sink_q_blocks` additionally runs those leading
+    query rows fully dense. Both default to 0 (upstream behaviour).
+    """
+
+    _validate(q, k, v, 1, thresh_type)
     scale = q.shape[-1] ** -0.5 if scale is None else float(scale)
     tau = float(tau)
     batch, tokens, heads, head_dim = q.shape
     blocks = triton.cdiv(tokens, BLOCK)
-    kc, vc, threshold = prepare(q, k, v, scale=scale, tau=tau)
+    kc, vc, threshold = prepare(q, k, v, scale=scale, tau=tau,
+                                thresh_type=thresh_type)
     output = torch.empty_like(v)
     block_shape = [1, BLOCK, 1, head_dim]
     summary_shape = [1, GROUP, 1, head_dim]
@@ -188,6 +205,8 @@ def sol_attn(
         TensorDescriptor.from_tensor(output, block_shape),
         scale,
         tokens,
+        max(0, min(int(sink_kv_blocks), blocks)),
+        max(0, min(int(sink_q_blocks), blocks)),
         heads,
         head_dim,
         blocks,
