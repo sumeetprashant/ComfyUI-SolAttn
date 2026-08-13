@@ -3,10 +3,28 @@
 NVIDIA's **Sol-Attn** sparse attention as an opt-in ComfyUI node — including on
 **RTX 50-series (SM120)**, which upstream doesn't support.
 
-Sparse attention means the model skips attention work it decides won't matter.
-It's an approximation: faster picture, slightly different picture. The kernel is
-NVIDIA's. Getting it to run on a 5090 and wiring it into ComfyUI is the only
-thing this repo adds.
+## What it does, without the words
+
+Every frame, the model compares every bit of the picture to every other bit.
+Most of those comparisons are two bits of empty sky asking each other how it's
+going. Pointless, and you pay for all of them.
+
+Sol-Attn lets the model skim. It glances at each chunk, decides "nothing
+happening here," and moves on — spending its real effort where things actually
+are. Fewer pointless conversations, same film, less time.
+
+The catch is the skimming is a guess. Skim a little and you save a little and
+nothing changes. Skim too much and the model loses track of what it already
+drew — and cheerfully draws it a second time. In testing it turned one woman
+walking down a street into two women walking down a street. It was very pleased
+with itself.
+
+**So: it's a dial between "slower and correct" and "faster and hallucinating a
+twin."** Your job is finding where that line sits on your machine, with your
+model. This page tells you how.
+
+The kernel is NVIDIA's. Getting it to run on a 5090 and wiring it into ComfyUI
+is the only thing this repo adds.
 
 ---
 
@@ -104,26 +122,54 @@ until you have a reason.
 
 ### Just tell me what to set
 
-1. **Faster:** `tau 1.8`. Everything else default.
-2. **Careful:** `tau 1.4`. Closest to the baseline picture.
-3. **Something looks wrong:** turn `tau` down. Not `dense_blocks` — it cost 6%
-   here and fixed nothing measurable.
+1. **Set `tau` to 1.4.** Leave everything else alone.
+2. **Render one clip with `enabled` off, one with it on.** Same seed.
+3. **Look at them.** If they show the same thing, keep it. If the second one
+   grew an extra person, drop `tau` to 1.2 and look again.
 
-### Will it actually help *you*?
+That's the whole method. There is no correct value I can give you, because it
+moves with your model, your resolution and your clip length.
 
-Longer clips win more. Attention is the part of the cost that grows fastest with
-clip length, and skipping attention is the only thing this node does — so the
-bigger the pile, the more there is to skip.
+### Find your own ceiling
 
-Same workflow, same seed, 20 steps, only the clip length changed:
+Every number below is the demo workflow, 243 frames, 20 steps, same seed, only
+`tau` changed:
+
+| setting | time | vs off | picture |
+|---|---|---|---|
+| off | 166.8 s | — | one woman |
+| `tau 1.0` | 173.1 s | **4% slower** | one woman |
+| `tau 1.4` | 156.4 s | **6% faster** | one woman |
+| `tau 1.8` | 135.2 s | 19% faster | **two women** ❌ |
+
+Read that table properly, because it's the honest shape of this thing:
+
+- **`tau 1.0` is slower than not using the node at all.** Deciding what to skip
+  costs something. Skip too little and you've paid the bill without ordering
+  anything.
+- **`tau 1.4` bought 6%.** Real, and not going to change your life.
+- **`tau 1.8` bought 19% and grew a second woman.** The useful speed and the
+  breakage live *right next to each other*, and you cannot tell them apart from
+  the console. You have to look at the picture.
+
+On a different graph (6 steps, turbo LoRA) `tau 1.8` held fine and gave 24%. So
+the ceiling is not a property of the node — it's a property of your setup. Find
+yours. It takes two renders.
+
+### Longer clips are worth more
+
+Same workflow, same seed, only the clip length changed:
 
 | clip | off | on (`tau 1.8`) | gain |
 |---|---|---|---|
 | 73 frames (3 s) | 35.1 s | 32.1 s | **9%** |
 | 243 frames (10 s) | 166.8 s | 135.2 s | **19%** |
 
-If you make three-second clips, this node is not your bottleneck and you can
-stop reading. If you make long ones, keep going.
+The cost of comparing everything to everything grows faster than the clip does,
+and skipping those comparisons is the only thing this node does. Short clip,
+small pile, small saving.
+
+**If you make three-second clips, this is not your bottleneck. Close the tab.**
 
 ---
 
@@ -172,6 +218,31 @@ you let it be sparse.
   inside the sampling loop. **Measure the second run.**
 
 ---
+
+## What's wrong with it
+
+Straight, before you wire it into anything you care about.
+
+1. **It can quietly duplicate things.** Push `tau` too far and characters split
+   in two. It happened at `tau 1.8` in the demo workflow on this page. Nothing
+   in the log warns you — the render "succeeds."
+2. **The console cannot tell you if the picture is fine.** `ACTIVE` means it
+   ran, not that it was right. Only your eyes close that loop.
+3. **Set too low, it's slower than not using it.** `tau 1.0` measured 4% slower
+   than off. There's a floor below which it's pure overhead.
+4. **The safe ceiling moves.** `tau 1.8` broke on one graph and was fine on
+   another. Change your model, resolution, step count or LoRA and you should
+   re-check.
+5. **The gain is modest.** 6% at a setting I'd actually ship. Upgrading CUDA
+   12.6 → 13.0 on this machine was worth **2.1×** with no quality cost at all.
+   Do the free wins first.
+6. **First run at any resolution is slow** — a one-time compile happens inside
+   the sampling loop. Ignore run one.
+7. **Barely tested.** One GPU, one model, one person. If you're on anything
+   else you are the test.
+
+None of that makes it useless. It makes it a dial you have to check, not a
+switch you flip and forget.
 
 ## Other nodes that do the same job
 
