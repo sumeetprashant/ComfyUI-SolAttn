@@ -1,22 +1,28 @@
 # ComfyUI-SolAttn
 
-NVIDIA's **Sol-Attn** sparse attention in ComfyUI. Works on **RTX 50-series
-(SM120)**, which upstream refuses.
+A ComfyUI node that makes MiniMax H3 video generation faster. It runs NVIDIA's
+Sol-Attn on RTX 50-series cards, which NVIDIA's own code refuses to do.
 
 ## What it does
 
-Model compares every part of the picture to every other part. Most of those
-comparisons are empty sky checking on empty sky. You pay for all of them.
+While generating a video, the model repeatedly compares every part of the
+picture with every other part. A lot of that work is wasted — most of those
+comparisons are between areas where nothing is happening.
 
-This node lets the model skim. Look at chunk, decide "nothing here," move on.
-Spend the effort where the stuff is.
+This node lets the model skip the comparisons it judges to be unimportant, and
+spend its time on the parts that matter. That makes rendering faster.
 
-Skim a little: save a little. Skim too much: model forgets what it already drew
-and draws it again. Two heads. Two people. Fun for nobody.
+The trade-off is that skipping is a judgement call, not a certainty. Skip a
+little and you save a little time with no visible change. Skip too much and the
+model loses track of what it has already drawn, and can draw the same character
+or object twice.
 
-**One dial. Slow and right, or fast and wrong. You find the middle.**
+So this is a dial, not a switch. Turned down it is safe and saves little. Turned
+up it saves more and eventually damages the picture. The useful part of this
+page is helping you find where that line sits on your machine.
 
-Kernel is NVIDIA's. This repo just makes it run on a 5090 and gives it a node.
+The underlying code is NVIDIA's. What this repository adds is making it run on a
+5090 and packaging it as a ComfyUI node.
 
 ## Install
 
@@ -25,149 +31,169 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/sumeetprashant/ComfyUI-SolAttn.git
 ```
 
-No pip installs. Needs Triton 3.4.0+.
+Nothing to pip install. You need Triton 3.4.0 or newer.
 
-## Use it
+## How to use it
 
 Open [`workflows/minimax_h3_i2v_solattn_simple.json`](workflows/minimax_h3_i2v_solattn_simple.json).
-17 nodes, all ComfyUI core except this one. Image → video with sound, MiniMax H3.
+It is 17 nodes, and everything in it except this node ships with ComfyUI. It
+turns one image into a video with sound using MiniMax H3.
 
 ```
 UNETLoader → Sol-Attn → SigmaShift → Guider ┐
 LoadImage + CLIP + VAE → H3ImageToVideo     ┴→ Sampler → decode → SaveVideo
 ```
 
-1. Point `UNETLoader`, `CLIPLoader`, `LoadImage` at your files.
-2. Set `tau` to **1.4**. Touch nothing else.
-3. Render once with `enabled` off, once with it on. Same seed.
-4. **Look at both.** Same picture? Keep it. Grew an extra person? Drop `tau`.
+1. Point `UNETLoader`, `CLIPLoader` and `LoadImage` at your own files. The
+   filenames saved in the workflow are from my machine.
+2. Set `tau` to **1.4** and leave every other setting alone.
+3. Render the same clip twice with the same seed: once with `enabled` off, once
+   with it on.
+4. Compare them. If they show the same thing, keep the setting. If the second
+   one has gained an extra character, lower `tau` and try again.
 
-Run it twice before you time it. First run at a new size compiles inside the
-sampling loop. That number is a lie.
+Two things worth knowing before you judge the speed:
 
-This line means it's working:
+- **Ignore the first render at any new resolution.** The node compiles itself
+  the first time it sees a new frame size, and that happens during rendering, so
+  the first result is always slower than the real figure.
+- **Check the console.** This line means the node is actually working:
 
-```
-[Sol-Attn] ACTIVE - attention is running on Sol-Attn
-```
+  ```
+  [Sol-Attn] ACTIVE - attention is running on Sol-Attn
+  ```
 
-No `ACTIVE`, no `falling back` → it isn't running. See [Conflicts](#conflicts).
+  If you see neither that line nor a `falling back` line, the node is not
+  running at all. See [Things that stop it working](#things-that-stop-it-working).
 
-## Numbers
+## Measured results
 
-Demo workflow, 243 frames, 20 steps, same seed, only `tau` changed.
+All from the demo workflow above: 243 frames, 20 steps, same seed, with only
+`tau` changed between runs.
 
-| `tau` | time | vs off | picture |
+| `tau` | time | compared to off | picture |
 |---|---|---|---|
-| off | 166.8 s | — | fine |
-| 1.0 | 173.1 s | **4% slower** | fine |
-| 1.4 | 156.4 s | **6% faster** | fine |
-| 1.8 | 135.2 s | 19% faster | **broke** |
+| off | 166.8 s | — | correct |
+| 1.0 | 173.1 s | **4% slower** | correct |
+| 1.4 | 156.4 s | **6% faster** | correct |
+| 1.8 | 135.2 s | 19% faster | **a character was duplicated** |
 
-Three things in that table:
+Three things are worth taking from that table:
 
-- **Too low is worse than off.** Deciding what to skip isn't free.
-- **The good speed and the breakage sit right next to each other.**
-- **Nothing warns you.** The render "succeeds." You have to look.
+- **Setting it too low is worse than not using it.** Working out what to skip
+  costs time of its own, so at low settings you pay that cost without saving
+  enough to cover it.
+- **The best speed sits immediately next to the point where it breaks.**
+- **Nothing warns you when it breaks.** The render completes normally and the
+  console looks healthy. You have to look at the video.
 
-On another graph (6 steps, turbo LoRA) `tau 1.8` was fine and gave 24%. So the
-ceiling belongs to your setup, not to this node. Two renders and you know yours.
+On a different setup — 6 steps with a turbo LoRA — `tau 1.8` was fine and saved
+24%. The safe maximum therefore depends on your models and settings rather than
+on this node, so it is worth finding your own. Two renders will tell you.
 
-**Long clips win more.** Same workflow, only length changed:
+### Longer clips benefit more
 
-| clip | off | on | gain |
+Same workflow and seed, with only the clip length changed:
+
+| clip length | off | on | saving |
 |---|---|---|---|
-| 3 s | 35.1 s | 32.1 s | 9% |
-| 10 s | 166.8 s | 135.2 s | 19% |
+| 3 seconds | 35.1 s | 32.1 s | 9% |
+| 10 seconds | 166.8 s | 135.2 s | 19% |
 
-Cost grows faster than the clip does. Small clip, small pile, small saving.
-**Short clips? This is not your problem. Close the tab.**
+The comparison work grows faster than the clip length does, and skipping that
+work is all this node does. A short clip simply does not have much to skip. If
+you mostly make short clips, this node will not help you much.
 
-## What's wrong with it
+## Known problems
 
-1. Too far and it draws things twice. No warning.
-2. `ACTIVE` means it ran, not that it was right. Only your eyes know.
-3. Too low and it's slower than off.
-4. Safe setting moves when your model, size, steps or LoRA move.
-5. Gain is small. CUDA 12.6 → 13.0 on this machine was worth **2.1×**, free, no
-   quality cost. Do that first.
-6. First run at a new size is slow. Ignore it.
-7. One GPU, one model, one person tested this. Elsewhere, you're the test.
+1. Pushed too far, it duplicates characters or objects, with no warning.
+2. The `ACTIVE` message confirms the node ran. It does not confirm the picture
+   is correct. Only checking the video does that.
+3. Set too low, it is slower than not using it at all.
+4. The safe setting changes when your model, resolution, step count or LoRA
+   changes, so it is worth re-checking after any of those.
+5. The saving is modest. For comparison, updating CUDA from 12.6 to 13.0 on this
+   machine was worth 2.1× with no loss of quality at all. Exact speed-ups like
+   that are worth doing before approximate ones like this.
+6. The first render at any new resolution is slow, for the reason above.
+7. It has been tested on one GPU, with one model, by one person.
 
-It's a dial you check, not a switch you forget.
+## Things that stop it working
 
-## Conflicts
+Two other nodes will disable this one without any error message.
 
-Two nodes switch this off silently. Both load fine. Neither warns you.
-
-| node | what it does |
+| node | what happens |
 |---|---|
-| **MiniMax H3 Memory Efficient Sage Attention** (KJNodes) | replaces attention on every block — Sol-Attn never runs, any wiring order |
-| **ModelAttentionBackend** (core) | writes the same slot — last one applied wins |
+| **MiniMax H3 Memory Efficient Sage Attention** (KJNodes) | It replaces the attention step on every layer, so this node never gets called, regardless of the order you wire them in |
+| **ModelAttentionBackend** (in ComfyUI core) | It uses the same slot as this node, so whichever is applied last wins |
 
-Bypass them if you want this node.
+Bypass either one if you want this node to run.
 
-## The knobs
+## Settings
 
-Two matter: `tau` and `backend`. Rest can wait.
+Only `tau` and `backend` matter to begin with.
 
-| knob | what it does | when |
+| setting | what it does | when to change it |
 |---|---|---|
-| `tau` | How much the model may skip. Low = careful. High = fast. Too high = twins. | **The dial.** Start 1.4 |
-| `backend` | `triton` or `flex` | Leave on `triton`. `flex` burns ~80 s compiling per size |
-| `enabled` | Off switch | Your A/B button |
-| `start_percent` / `end_percent` | Which slice of the render skims | Chasing one specific artifact |
-| `tau_end` | Careful at the start, fast at the end | When one fixed `tau` won't do both |
-| `dense_blocks` | First and last N blocks stay exact | Insurance. Bought nothing here |
-| `dense_block_ranges` | Pick blocks by hand: `39-42` | When the ends aren't the problem |
-| `sink_conditioning` | **H3 only.** Stops it skimming your prompt and audio | Leave on `exact_kv` for H3 |
-| `min_tokens` | Below this, don't bother | Rarely |
-| `thresh_type` | How it decides. `exact` thinks harder, charges more | Rarely |
+| `tau` | How much the model is allowed to skip. Lower is safer, higher is faster. | This is the main dial. Start at 1.4 |
+| `backend` | Which implementation runs. | Leave on `triton`. `flex` spends about 80 seconds compiling for each new frame size |
+| `enabled` | Turns the node off without unplugging it. | For comparing with and without |
+| `start_percent` / `end_percent` | Limits skipping to part of the render. | Only when chasing a specific fault |
+| `tau_end` | Starts careful and gets faster as the render progresses. | When a single fixed `tau` is either too slow or too rough |
+| `dense_blocks` | Forces the first and last few layers to do full work. | As insurance. It made no measurable difference here |
+| `dense_block_ranges` | The same, but you choose which layers, e.g. `39-42`. | When the layers you want to protect are not at either end |
+| `sink_conditioning` | MiniMax H3 only. Stops the model skipping over your prompt and the audio. | Leave on `exact_kv` for H3. It does nothing on other models and says so in the log |
+| `min_tokens` | Below this clip size, don't skip anything. | Rarely |
+| `thresh_type` | How the skip decision is calculated. `exact` is more careful and costs more time. | Rarely |
 
-## Other nodes, same job
+## Alternatives
 
-Not benchmarked against each other. Some are better. Pick on what you need.
+I have not benchmarked these against each other. Several do more than this one.
+Choose on what you need.
 
-| project | why |
+| project | why you might prefer it |
 |---|---|
-| [Saganaki22/ComfyUI-sol-attn](https://github.com/Saganaki22/ComfyUI-sol-attn) | **More features than this.** int8 QK, tau curve, FFN chunking, H3 variant. Also SM89 |
-| [kijai/ComfyUI-SolAttn_triton](https://github.com/kijai/ComfyUI-SolAttn_triton) | kijai's stuff lands early and stays maintained |
-| [KingGore/ComfyUI_sol-attn_Blackwell](https://github.com/KingGore/ComfyUI_sol-attn_Blackwell) | Blackwell via `flex_attention` |
-| [woct0rdho/ComfyUI-RadialAttn](https://github.com/woct0rdho/ComfyUI-RadialAttn) | different method entirely, worth a look |
-| **comfy kitchen attention** (core) | **Try first.** Exact, fast, already installed |
+| [Saganaki22/ComfyUI-sol-attn](https://github.com/Saganaki22/ComfyUI-sol-attn) | More features than this repository, including a dedicated H3 version. Also supports SM89 |
+| [kijai/ComfyUI-SolAttn_triton](https://github.com/kijai/ComfyUI-SolAttn_triton) | Another version of the same thing, actively maintained |
+| [KingGore/ComfyUI_sol-attn_Blackwell](https://github.com/KingGore/ComfyUI_sol-attn_Blackwell) | A different route to running this on Blackwell cards |
+| [woct0rdho/ComfyUI-RadialAttn](https://github.com/woct0rdho/ComfyUI-RadialAttn) | A different method for the same goal |
+| **comfy kitchen attention**, built into ComfyUI | Worth trying first. It is already installed, it is fast, and it does not approximate anything |
 
 ## Requirements
 
-Anything else falls back to your normal backend and says why. Never breaks a
-render.
+The node checks these at runtime. Anything it cannot handle falls back to your
+normal settings and logs the reason, so it will not break a render.
 
 | | |
 |---|---|
-| `head_dim` | exactly 128 |
-| dtype | bfloat16 |
-| mask | none |
+| head size | exactly 128 |
+| precision | bfloat16 |
+| attention mask | none |
 | layout | 4D q/k/v |
 
-Tested: RTX 5090 · torch 2.11.0+cu130 · Triton 3.4.0 · ComfyUI 0.32.0 ·
-Windows 11 · MiniMax H3. SM89/SM86 untested.
+Tested on: RTX 5090, torch 2.11.0+cu130, Triton 3.4.0, ComfyUI 0.32.0, Windows
+11, MiniMax H3. Older NVIDIA cards are untested.
 
-**The architecture gate:** upstream blocks non-SM90/SM100. That check picks
-between NVIDIA's hand-written kernels, which only exist for those two chips.
-It's not a safety check — no userspace CUDA library can touch power or thermal
-limits. The Triton kernel has no such dependency and only inherited the guard by
-sharing a validator. Lifted for the Triton path only; every other check kept.
-Risk is wrong pixels, not a dead GPU. Diff in [`NOTICE`](NOTICE).
+**About the card check:** NVIDIA's code blocks anything that isn't an H100 or
+B200. That check exists to choose between hand-written versions of the code that
+only exist for those two cards. It is not a safety check, and no software of
+this kind can affect your GPU's power or temperature limits. The version this
+repository uses is compiled for whatever card you have and never needed that
+restriction; it only inherited it by sharing the same validation function. This
+repository removes it for that version only, and keeps every other check. The
+risk is a wrong-looking picture, not damaged hardware. The exact change is
+recorded in [`NOTICE`](NOTICE).
 
-Bad numerics on another chip is this repo's problem. Don't file it upstream
-against NVlabs/Sana.
+If you get bad results on another card, that is this repository's problem to
+fix. Please don't report it to NVlabs/Sana.
 
 ## Credits
 
-Nearly all of this is other people's work.
+Nearly all of the work here is other people's.
 
 **Sol-Attn** — Haopeng Li, Yitong Li, Junsong Chen, Tian Ye, Haozhe Liu,
-Jincheng Yu, Duomin Wang, Ruihua Zhang, Zeke Xie, Enze Xie, Song Han (NVIDIA
-Research). Kernel, method and everything in `solref/` are theirs.
+Jincheng Yu, Duomin Wang, Ruihua Zhang, Zeke Xie, Enze Xie and Song Han (NVIDIA
+Research). The method and everything in `solref/` is theirs.
 [Project](https://nvlabs.github.io/Sana/Sol-Attn/) ·
 [Source](https://github.com/NVlabs/Sana/tree/sol-engine) ·
 [Paper](https://arxiv.org/abs/2607.24027)
@@ -184,24 +210,25 @@ Research). Kernel, method and everything in `solref/` are theirs.
 }
 ```
 
-**ComfyUI** — the `optimized_attention_override` hook this builds on.
+**ComfyUI** — for the hook that makes a per-model patch like this possible.
 
-**Lineage** (no code taken):
-[ComfyUI-RadialAttn](https://github.com/woct0rdho/ComfyUI-RadialAttn) (@woct0rdho)
-set the opt-in `MODEL → MODEL` patch pattern ·
-[RadialAttention](https://github.com/mit-han-lab/radial-attention) (MIT Han Lab) ·
-[ComfyUI-SolAttn_triton](https://github.com/kijai/ComfyUI-SolAttn_triton) (@kijai),
-where `start_percent`/`end_percent` came from ·
+**Design lineage**, though no code was taken from them:
+[ComfyUI-RadialAttn](https://github.com/woct0rdho/ComfyUI-RadialAttn)
+(@woct0rdho) established the opt-in patch-node pattern this follows ·
+[RadialAttention](https://github.com/mit-han-lab/radial-attention) (MIT Han Lab)
+· [ComfyUI-SolAttn_triton](https://github.com/kijai/ComfyUI-SolAttn_triton)
+(@kijai), where the `start_percent` / `end_percent` idea came from ·
 [ComfyUI_sol-attn_Blackwell](https://github.com/KingGore/ComfyUI_sol-attn_Blackwell)
-(@KingGore), the `BlockMask.from_kv_blocks` detail `flex` needs.
+(@KingGore), for the `BlockMask.from_kv_blocks` detail the `flex` backend needs.
 
-**Triton** — compiles it. **FlashAttention** (Tri Dao et al.) — lineage in
-[`NOTICE`](NOTICE).
+**Triton** — compiles the code. **FlashAttention** (Tri Dao and others) —
+lineage recorded in [`NOTICE`](NOTICE).
 
-SM120 change, integration, packaging:
+SM120 change, integration and packaging:
 [@sumeetprashant](https://github.com/sumeetprashant).
 
 ## License
 
 Apache 2.0 — see [`LICENSE`](LICENSE), inherited from NVlabs/Sana. Changes to
-NVIDIA source itemised in [`NOTICE`](NOTICE) per Apache-2.0 §4(b).
+NVIDIA's source are itemised in [`NOTICE`](NOTICE) as required by Apache-2.0
+§4(b).
